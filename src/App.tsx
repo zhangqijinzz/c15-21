@@ -1,3 +1,4 @@
+import { BatchCopyPanel } from './components/BatchCopyPanel';
 import { DeviceEditor } from './components/DeviceEditor';
 import { ScenarioCard } from './components/ScenarioCard';
 import { formatNumber } from './domain';
@@ -25,13 +26,14 @@ function App() {
         <div className="hero-spark"><span>本月预计用电</span><strong>{formatNumber(summary.total.monthlyKwh)} <small>kWh</small></strong><div className="sparkline"><i /><i /><i /><i /><i /><i /><i /></div></div>
       </section>
 
-      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}</div>}
+      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span><div className="notice-body">{state.notice.text}{state.notice.details && state.notice.details.length > 0 && <ul className="notice-details">{state.notice.details.map((line) => <li key={line}>{line}</li>)}</ul>}</div></div>}
 
       <div className="workspace-grid">
         <section className="panel setup-panel">
-          <div className="panel-heading"><div><span className="step">01</span><h2>设备配置</h2><p>输入设备的额定功率与每天使用时长</p></div><span className="count-pill">{active.devices.length} 台设备</span></div>
+          <div className="panel-heading"><div><span className="step">01</span><h2>设备配置</h2><p>输入设备的额定功率与每天使用时长</p></div><div className="panel-actions">{state.canUndo && <button className="undo-button" onClick={() => vm.undo()}>↩ 撤回</button>}<span className="count-pill">{active.devices.length} 台设备</span></div></div>
           <div className="device-list">{active.devices.map((device) => <DeviceEditor key={device.id} device={device} onChange={(patch) => vm.updateDevice(device.id, patch)} onRemove={() => vm.removeDevice(device.id)} />)}</div>
           <button className="add-device" onClick={() => vm.addDevice()}><span>＋</span> 添加一台设备</button>
+          <BatchCopyPanel devices={active.devices} onApply={(sourceId, targetIds, fields) => vm.copyDeviceParams(sourceId, targetIds, fields)} />
           <div className="tip"><span>✦</span><p><strong>小提示</strong> 功率可以在设备铭牌或说明书上找到，1,000 W = 1 kW。</p></div>
         </section>
 

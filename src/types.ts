@@ -25,6 +25,21 @@ export type ViewStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed'
 export interface Notice {
   kind: 'success' | 'error' | 'info';
   text: string;
+  details?: string[];
+}
+
+export type DeviceParamField = 'name' | 'watts' | 'dailyHours';
+
+export interface DeviceCopyFailure {
+  deviceId: string;
+  deviceName: string;
+  reasons: string[];
+}
+
+export interface DeviceCopyPlan {
+  ok: boolean;
+  devices: EnergyDevice[];
+  failures: DeviceCopyFailure[];
 }
 
 export interface EnergyEstimate {

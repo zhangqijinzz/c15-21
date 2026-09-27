@@ -1,4 +1,4 @@
-import type { EnergyDevice, EnergyEstimate, EnergyScenario, ScenarioSummary } from './types';
+import type { DeviceCopyPlan, DeviceParamField, EnergyDevice, EnergyEstimate, EnergyScenario, ScenarioSummary } from './types';
 
 export const MAX_DAILY_HOURS = 24;
 
@@ -47,6 +47,38 @@ export function validateDevice(device: Pick<EnergyDevice, 'name' | 'watts' | 'da
   if (!Number.isFinite(device.dailyHours) || device.dailyHours < 0) return '使用时间不能为负数';
   if (device.dailyHours > MAX_DAILY_HOURS) return '每日使用时间不能超过 24 小时';
   return null;
+}
+
+export function planDeviceParamCopy(
+  scenario: EnergyScenario,
+  sourceId: string,
+  targetIds: readonly string[],
+  fields: readonly DeviceParamField[],
+): DeviceCopyPlan {
+  const source = scenario.devices.find((device) => device.id === sourceId);
+  const targets = new Set(targetIds.filter((id) => id !== sourceId));
+  if (!source || targets.size === 0 || fields.length === 0) {
+    return { ok: false, devices: scenario.devices, failures: [] };
+  }
+  const next = scenario.devices.map((device) => {
+    if (!targets.has(device.id)) return device;
+    const merged = { ...device };
+    if (fields.includes('name')) merged.name = source.name;
+    if (fields.includes('watts')) merged.watts = source.watts;
+    if (fields.includes('dailyHours')) merged.dailyHours = source.dailyHours;
+    return merged;
+  });
+  const failures = scenario.devices.flatMap((device) => {
+    if (!targets.has(device.id)) return [];
+    const merged = next.find((item) => item.id === device.id) ?? device;
+    const reasons: string[] = [];
+    const error = validateDevice(merged);
+    if (error) reasons.push(error);
+    const duplicated = next.some((other) => other.id !== device.id && other.name.trim() === merged.name.trim());
+    if (duplicated) reasons.push(`名称「${merged.name.trim() || '未命名'}」与其他设备重复`);
+    return reasons.length > 0 ? [{ deviceId: device.id, deviceName: device.name, reasons }] : [];
+  });
+  return failures.length > 0 ? { ok: false, devices: scenario.devices, failures } : { ok: true, devices: next, failures };
 }
 
 export function validateScenarioSettings(pricePerKwh: number, daysPerMonth: number): string | null {

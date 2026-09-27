@@ -1,18 +1,22 @@
-import { cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
+import { planDeviceParamCopy, cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
 import { findScenario, type EnergyRepository } from './repository';
-import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
+import type { DeviceParamField, EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
 
 export interface EnergyLensState {
   document: EnergyDocument | null;
   status: ViewStatus;
   notice: Notice | null;
+  canUndo: boolean;
 }
 
 type Listener = (state: EnergyLensState) => void;
 
+const MAX_HISTORY = 50;
+
 export class EnergyLensViewModel {
-  private state: EnergyLensState = { document: null, status: 'loading', notice: null };
+  private state: EnergyLensState = { document: null, status: 'loading', notice: null, canUndo: false };
   private readonly listeners = new Set<Listener>();
+  private history: EnergyDocument[] = [];
 
   constructor(private readonly repository: EnergyRepository) {}
 
@@ -24,10 +28,11 @@ export class EnergyLensViewModel {
   getState(): EnergyLensState { return this.state; }
 
   initialize(): void {
+    this.history = [];
     try {
-      this.state = { document: this.repository.load(), status: 'ready', notice: null };
+      this.state = { document: this.repository.load(), status: 'ready', notice: null, canUndo: false };
     } catch {
-      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' } };
+      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' }, canUndo: false };
     }
     this.emit();
   }
@@ -71,6 +76,36 @@ export class EnergyLensViewModel {
     this.commit((current) => ({ ...current, devices: current.devices.filter((item) => item.id !== deviceId) }), '设备已移除');
   }
 
+  copyDeviceParams(sourceId: string, targetIds: string[], fields: DeviceParamField[]): void {
+    const scenario = this.activeScenario;
+    if (!scenario) return;
+    if (fields.length === 0) {
+      this.setNotice({ kind: 'info', text: '请先勾选要同步的参数（功率、时长或名称）' });
+      return;
+    }
+    const targets = targetIds.filter((id) => id !== sourceId && scenario.devices.some((device) => device.id === id));
+    if (!scenario.devices.some((device) => device.id === sourceId) || targets.length === 0) {
+      this.setNotice({ kind: 'info', text: '请先选择要应用到的其它设备' });
+      return;
+    }
+    const plan = planDeviceParamCopy(scenario, sourceId, targets, fields);
+    if (!plan.ok) {
+      this.setNotice({
+        kind: 'error',
+        text: `有 ${plan.failures.length} 台设备无法应用，为保持一致本次复制未生效`,
+        details: plan.failures.map((failure) => `${failure.deviceName}：${failure.reasons.join('；')}`),
+      });
+      return;
+    }
+    this.commit((current) => ({ ...current, devices: plan.devices }), `已将选中参数应用到 ${targets.length} 台设备，可点击“撤回”还原`);
+  }
+
+  undo(): void {
+    const previous = this.history.pop();
+    if (!previous) return;
+    this.persist(previous, '已撤回上一步修改');
+  }
+
   updateSettings(patch: Partial<Pick<EnergyScenario, 'name' | 'pricePerKwh' | 'daysPerMonth'>>): void {
     const scenario = this.activeScenario;
     if (!scenario) return;
@@ -104,6 +139,8 @@ export class EnergyLensViewModel {
 
   private commit(update: (scenario: EnergyScenario) => EnergyScenario, notice: string): void {
     if (!this.state.document) return;
+    this.history.push(this.state.document);
+    if (this.history.length > MAX_HISTORY) this.history.shift();
     const document = { ...this.state.document, scenarios: this.state.document.scenarios.map((scenario) => scenario.id === this.state.document?.activeScenarioId ? update(scenario) : scenario) };
     this.persist(document, notice);
   }
@@ -111,7 +148,7 @@ export class EnergyLensViewModel {
   private persist(document: EnergyDocument, notice: string): void {
     try {
       this.repository.save(document);
-      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice } };
+      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice }, canUndo: this.history.length > 0 };
     } catch {
       this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
     }
