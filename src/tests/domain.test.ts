@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimateDevice, summarizeScenario, validateDevice } from '../domain';
+import { estimateDevice, planDeviceSync, summarizeScenario, validateDevice } from '../domain';
 import type { EnergyScenario } from '../types';
 
 describe('energy domain', () => {
@@ -20,5 +20,44 @@ describe('energy domain', () => {
   it('rejects negative power and more than 24 hours', () => {
     expect(validateDevice({ name: 'x', watts: -1, dailyHours: 1 })).toBe('功率不能为负数');
     expect(validateDevice({ name: 'x', watts: 1, dailyHours: 24.1 })).toBe('每日使用时间不能超过 24 小时');
+  });
+});
+
+describe('planDeviceSync', () => {
+  const scenario: EnergyScenario = { id: 's', name: 'test', pricePerKwh: 1, daysPerMonth: 30, createdAt: '', devices: [
+    { id: 'a', name: '空调', watts: 1200, dailyHours: 6 },
+    { id: 'b', name: '冰箱', watts: 150, dailyHours: 10 },
+    { id: 'c', name: '台灯', watts: 12, dailyHours: 5 },
+  ] };
+
+  it('copies only the chosen fields to the chosen targets', () => {
+    const plan = planDeviceSync(scenario, 'a', ['b'], ['watts']);
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.devices.find((device) => device.id === 'b')).toMatchObject({ name: '冰箱', watts: 1200, dailyHours: 10 });
+    expect(plan.devices.find((device) => device.id === 'c')).toMatchObject({ watts: 12 });
+  });
+
+  it('rejects duplicated names and reports each conflicting device', () => {
+    const plan = planDeviceSync(scenario, 'a', ['b', 'c'], ['name', 'watts']);
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.failures).toHaveLength(2);
+    expect(plan.failures.map((failure) => failure.deviceId).sort()).toEqual(['b', 'c']);
+    expect(plan.failures[0].reason).toContain('重复');
+  });
+
+  it('flags targets whose stored values are out of range', () => {
+    const corrupted: EnergyScenario = { ...scenario, devices: [...scenario.devices, { id: 'd', name: '旧设备', watts: -5, dailyHours: 1 }] };
+    const plan = planDeviceSync(corrupted, 'a', ['d'], ['dailyHours']);
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.failures).toEqual([{ deviceId: 'd', deviceName: '旧设备', reason: '功率不能为负数' }]);
+  });
+
+  it('requires at least one field and one target', () => {
+    expect(planDeviceSync(scenario, 'a', ['b'], []).ok).toBe(false);
+    expect(planDeviceSync(scenario, 'a', [], ['watts']).ok).toBe(false);
+    expect(planDeviceSync(scenario, 'a', ['a'], ['watts']).ok).toBe(false);
   });
 });

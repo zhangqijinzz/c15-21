@@ -43,4 +43,37 @@ describe('EnergyLensViewModel', () => {
     expect(vm.getState().status).toBe('error');
     expect(vm.getState().notice?.text).toContain('保存失败');
   });
+
+  it('applies params to selected devices, refreshes totals and can be undone', () => {
+    const before = vm.activeSummary?.total.monthlyKwh ?? 0;
+    vm.syncDeviceParams('device-aircon', ['device-fridge', 'device-lamp'], ['watts', 'dailyHours']);
+    expect(vm.activeScenario?.devices.every((device) => device.watts === 1200 && device.dailyHours === 6)).toBe(true);
+    expect(vm.activeSummary?.total.monthlyKwh).toBeGreaterThan(before);
+    expect(vm.activeSummary?.devices.map((device) => device.share).reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+    expect(vm.getState().canUndo).toBe(true);
+
+    vm.undo();
+    expect(vm.getState().canUndo).toBe(false);
+    expect(vm.activeScenario?.devices.find((device) => device.id === 'device-fridge')).toMatchObject({ watts: 150, dailyHours: 10 });
+    expect(vm.activeSummary?.total.monthlyKwh).toBeCloseTo(before);
+  });
+
+  it('applies nothing and lists every failure when any device is rejected', () => {
+    const before = vm.activeScenario?.devices;
+    vm.syncDeviceParams('device-aircon', ['device-fridge', 'device-lamp'], ['name']);
+    expect(vm.getState().status).toBe('error');
+    expect(vm.getState().notice?.details).toHaveLength(2);
+    expect(vm.getState().notice?.details?.[0]).toContain('重复');
+    expect(vm.activeScenario?.devices).toEqual(before);
+    expect(vm.getState().canUndo).toBe(false);
+  });
+
+  it('clears the undo snapshot when a normal edit follows a sync', () => {
+    vm.syncDeviceParams('device-aircon', ['device-fridge'], ['watts']);
+    expect(vm.getState().canUndo).toBe(true);
+    vm.updateDevice('device-lamp', { dailyHours: 3 });
+    expect(vm.getState().canUndo).toBe(false);
+    vm.undo();
+    expect(vm.activeScenario?.devices.find((device) => device.id === 'device-fridge')?.watts).toBe(1200);
+  });
 });

@@ -1,4 +1,4 @@
-import type { EnergyDevice, EnergyEstimate, EnergyScenario, ScenarioSummary } from './types';
+import type { EnergyDevice, EnergyEstimate, EnergyScenario, ScenarioSummary, SyncableDeviceField } from './types';
 
 export const MAX_DAILY_HOURS = 24;
 
@@ -53,6 +53,80 @@ export function validateScenarioSettings(pricePerKwh: number, daysPerMonth: numb
   if (!Number.isFinite(pricePerKwh) || pricePerKwh < 0) return '电价不能为负数';
   if (!Number.isFinite(daysPerMonth) || daysPerMonth < 1 || daysPerMonth > 31) return '计费天数需在 1–31 天之间';
   return null;
+}
+
+export interface DeviceSyncFailure {
+  deviceId: string;
+  deviceName: string;
+  reason: string;
+}
+
+export type DeviceSyncPlan =
+  | { ok: true; devices: EnergyDevice[] }
+  | { ok: false; failures: DeviceSyncFailure[] };
+
+/**
+ * 规划一次批量应用：把 source 设备的指定字段复制到 targets。
+ * 所有目标设备都通过校验才返回新数组；任一失败则返回完整失败清单，调用方不应部分应用。
+ */
+export function planDeviceSync(
+  scenario: EnergyScenario,
+  sourceId: string,
+  targetIds: readonly string[],
+  fields: readonly SyncableDeviceField[],
+): DeviceSyncPlan {
+  const source = scenario.devices.find((device) => device.id === sourceId);
+  if (!source) {
+    return { ok: false, failures: [{ deviceId: sourceId, deviceName: sourceId, reason: '找不到作为模板的设备' }] };
+  }
+  if (fields.length === 0) {
+    return { ok: false, failures: [{ deviceId: sourceId, deviceName: source.name, reason: '请至少选择一项要同步的参数' }] };
+  }
+  const targetIdSet = new Set(targetIds.filter((id) => id !== sourceId));
+  if (targetIdSet.size === 0) {
+    return { ok: false, failures: [{ deviceId: sourceId, deviceName: source.name, reason: '请选择要应用到的设备' }] };
+  }
+
+  const failures = new Map<string, DeviceSyncFailure>();
+  const fail = (device: EnergyDevice, reason: string) => {
+    const existing = failures.get(device.id);
+    if (existing) existing.reason = `${existing.reason}；${reason}`;
+    else failures.set(device.id, { deviceId: device.id, deviceName: device.name.trim() || device.id, reason });
+  };
+
+  for (const id of targetIdSet) {
+    if (!scenario.devices.some((device) => device.id === id)) {
+      failures.set(id, { deviceId: id, deviceName: id, reason: '找不到该设备，可能已被移除' });
+    }
+  }
+
+  const nextDevices = scenario.devices.map((device) => {
+    if (!targetIdSet.has(device.id)) return device;
+    const next = { ...device };
+    for (const field of fields) {
+      if (field === 'name') next.name = source.name;
+      else if (field === 'watts') next.watts = source.watts;
+      else next.dailyHours = source.dailyHours;
+    }
+    return next;
+  });
+
+  for (const device of nextDevices) {
+    if (!targetIdSet.has(device.id)) continue;
+    const error = validateDevice(device);
+    if (error) fail(device, error);
+  }
+
+  if (fields.includes('name')) {
+    for (const device of nextDevices) {
+      if (!targetIdSet.has(device.id)) continue;
+      const duplicated = nextDevices.some((other) => other.id !== device.id && other.name.trim() === device.name.trim());
+      if (duplicated) fail(device, `名称“${device.name.trim()}”与方案内其它设备重复`);
+    }
+  }
+
+  if (failures.size > 0) return { ok: false, failures: [...failures.values()] };
+  return { ok: true, devices: nextDevices };
 }
 
 export function formatNumber(value: number, digits = 2): string {

@@ -1,18 +1,20 @@
-import { cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
+import { cloneScenario, planDeviceSync, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
 import { findScenario, type EnergyRepository } from './repository';
-import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
+import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, SyncableDeviceField, ViewStatus } from './types';
 
 export interface EnergyLensState {
   document: EnergyDocument | null;
   status: ViewStatus;
   notice: Notice | null;
+  canUndo: boolean;
 }
 
 type Listener = (state: EnergyLensState) => void;
 
 export class EnergyLensViewModel {
-  private state: EnergyLensState = { document: null, status: 'loading', notice: null };
+  private state: EnergyLensState = { document: null, status: 'loading', notice: null, canUndo: false };
   private readonly listeners = new Set<Listener>();
+  private undoSnapshot: EnergyDocument | null = null;
 
   constructor(private readonly repository: EnergyRepository) {}
 
@@ -25,9 +27,9 @@ export class EnergyLensViewModel {
 
   initialize(): void {
     try {
-      this.state = { document: this.repository.load(), status: 'ready', notice: null };
+      this.state = { document: this.repository.load(), status: 'ready', notice: null, canUndo: false };
     } catch {
-      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' } };
+      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' }, canUndo: false };
     }
     this.emit();
   }
@@ -53,6 +55,33 @@ export class EnergyLensViewModel {
       return;
     }
     this.commit((current) => ({ ...current, devices: current.devices.map((item) => item.id === deviceId ? next : item) }), '参数已更新');
+  }
+
+  /**
+   * 把 source 设备的指定参数批量应用到同方案的其它设备。
+   * 任一目标校验失败则整体不应用，并通过 notice.details 列出每台失败设备的原因。
+   */
+  syncDeviceParams(sourceId: string, targetIds: string[], fields: SyncableDeviceField[]): void {
+    const scenario = this.activeScenario;
+    if (!scenario) return;
+    const plan = planDeviceSync(scenario, sourceId, targetIds, fields);
+    if (!plan.ok) {
+      this.setNotice({
+        kind: 'error',
+        text: `批量应用未执行：${plan.failures.length} 台设备未通过检查，所有设备保持原样`,
+        details: plan.failures.map((failure) => `${failure.deviceName}：${failure.reason}`),
+      });
+      return;
+    }
+    const count = targetIds.filter((id) => id !== sourceId).length;
+    this.commit((current) => ({ ...current, devices: plan.devices }), `已把参数应用到 ${count} 台设备`, { recordUndo: true });
+  }
+
+  undo(): void {
+    const snapshot = this.undoSnapshot;
+    if (!snapshot) return;
+    this.undoSnapshot = null;
+    this.persist(snapshot, '已撤回上一步批量应用，设备参数已还原');
   }
 
   addDevice(): void {
@@ -102,16 +131,18 @@ export class EnergyLensViewModel {
     this.emit();
   }
 
-  private commit(update: (scenario: EnergyScenario) => EnergyScenario, notice: string): void {
+  private commit(update: (scenario: EnergyScenario) => EnergyScenario, notice: string, options?: { recordUndo?: boolean }): void {
     if (!this.state.document) return;
-    const document = { ...this.state.document, scenarios: this.state.document.scenarios.map((scenario) => scenario.id === this.state.document?.activeScenarioId ? update(scenario) : scenario) };
-    this.persist(document, notice);
+    const previous = this.state.document;
+    const document = { ...previous, scenarios: previous.scenarios.map((scenario) => scenario.id === previous.activeScenarioId ? update(scenario) : scenario) };
+    this.persist(document, notice, options?.recordUndo ? structuredClone(previous) : undefined);
   }
 
-  private persist(document: EnergyDocument, notice: string): void {
+  private persist(document: EnergyDocument, notice: string, undoSnapshot?: EnergyDocument): void {
     try {
       this.repository.save(document);
-      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice } };
+      this.undoSnapshot = undoSnapshot ?? null;
+      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice }, canUndo: this.undoSnapshot !== null };
     } catch {
       this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
     }
@@ -119,7 +150,7 @@ export class EnergyLensViewModel {
   }
 
   private setNotice(notice: Notice): void {
-    this.state = { ...this.state, status: notice.kind === 'error' ? 'error' : 'editing', notice };
+    this.state = { ...this.state, status: notice.kind === 'error' ? 'error' : 'editing', notice, canUndo: this.undoSnapshot !== null };
     this.emit();
   }
 

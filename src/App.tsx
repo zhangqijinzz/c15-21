@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { DeviceEditor } from './components/DeviceEditor';
 import { ScenarioCard } from './components/ScenarioCard';
+import { SyncParamsPanel } from './components/SyncParamsPanel';
 import { formatNumber } from './domain';
 import { useEnergyLens } from './hooks';
+import type { SyncableDeviceField } from './types';
 
 function App() {
   const { vm, state } = useEnergyLens();
+  const [syncSourceId, setSyncSourceId] = useState<string | null>(null);
   const active = vm.activeScenario;
   const summary = vm.activeSummary;
   if (state.status === 'loading' || !active || !summary) return <main className="loading-screen"><div className="pulse" /><p>正在恢复你的能耗方案…</p></main>;
@@ -12,6 +16,12 @@ function App() {
   const baseline = state.document?.scenarios.find((item) => item.id !== active.id);
   const comparisonValue = baseline && baseline.id !== active.id ? baseline.devices.reduce((total, device) => total + (device.watts * device.dailyHours * baseline.daysPerMonth) / 1000, 0) : null;
   const deltaKwh = comparisonValue === null ? null : summary.total.monthlyKwh - comparisonValue;
+  const syncSource = active.devices.find((device) => device.id === syncSourceId) ?? null;
+  const applySync = (targetIds: string[], fields: SyncableDeviceField[]) => {
+    if (!syncSource) return;
+    vm.syncDeviceParams(syncSource.id, targetIds, fields);
+    if (vm.getState().notice?.kind !== 'error') setSyncSourceId(null);
+  };
 
   return <div className="app-shell">
     <header className="topbar">
@@ -25,14 +35,21 @@ function App() {
         <div className="hero-spark"><span>本月预计用电</span><strong>{formatNumber(summary.total.monthlyKwh)} <small>kWh</small></strong><div className="sparkline"><i /><i /><i /><i /><i /><i /><i /></div></div>
       </section>
 
-      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}</div>}
+      {state.notice && <div className={`notice ${state.notice.kind}`} role="status">
+        <span>{state.notice.kind === 'error' ? '!' : '✓'}</span>
+        <div className="notice-content">
+          {state.notice.text}
+          {state.notice.details && state.notice.details.length > 0 && <ul>{state.notice.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}
+        </div>
+        {state.canUndo && <button className="notice-undo" onClick={() => vm.undo()}>↩ 撤回</button>}
+      </div>}
 
       <div className="workspace-grid">
         <section className="panel setup-panel">
           <div className="panel-heading"><div><span className="step">01</span><h2>设备配置</h2><p>输入设备的额定功率与每天使用时长</p></div><span className="count-pill">{active.devices.length} 台设备</span></div>
-          <div className="device-list">{active.devices.map((device) => <DeviceEditor key={device.id} device={device} onChange={(patch) => vm.updateDevice(device.id, patch)} onRemove={() => vm.removeDevice(device.id)} />)}</div>
+          <div className="device-list">{active.devices.map((device) => <DeviceEditor key={device.id} device={device} onChange={(patch) => vm.updateDevice(device.id, patch)} onRemove={() => vm.removeDevice(device.id)} onSync={active.devices.length > 1 ? () => setSyncSourceId(device.id) : undefined} />)}</div>
           <button className="add-device" onClick={() => vm.addDevice()}><span>＋</span> 添加一台设备</button>
-          <div className="tip"><span>✦</span><p><strong>小提示</strong> 功率可以在设备铭牌或说明书上找到，1,000 W = 1 kW。</p></div>
+          <div className="tip"><span>✦</span><p><strong>小提示</strong> 功率可以在设备铭牌或说明书上找到，1,000 W = 1 kW。点设备行的 ⧉ 按钮，可把这台设备的参数批量应用到其它设备。</p></div>
         </section>
 
         <section className="panel settings-panel">
@@ -50,6 +67,7 @@ function App() {
 
       <section className="scenario-section"><div className="section-title"><div><span className="step">04</span><h2>方案对比</h2><p>复制当前方案，试试另一种生活方式</p></div><button className="secondary-button" onClick={() => vm.duplicateActive()}>＋ 复制当前方案</button></div><div className="scenario-grid">{state.document?.scenarios.map((scenario) => <ScenarioCard key={scenario.id} scenario={scenario} totalKwh={scenario.id === active.id ? summary.total.monthlyKwh : scenario.devices.reduce((sum, device) => sum + (device.watts * device.dailyHours * scenario.daysPerMonth) / 1000, 0)} active={scenario.id === active.id} onSelect={() => vm.selectScenario(scenario.id)} />)}</div>{baseline && deltaKwh !== null && <div className="comparison-note"><span>↕</span><p>当前方案相较于“{baseline.name}”每月 <b>{deltaKwh <= 0 ? '少' : '多'} {formatNumber(Math.abs(deltaKwh))} kWh</b>，电费约 <b>¥{formatNumber(Math.abs(deltaKwh) * active.pricePerKwh)}</b>。</p></div>}</section>
     </main>
+    {syncSource && <SyncParamsPanel source={syncSource} targets={active.devices.filter((device) => device.id !== syncSource.id)} onApply={applySync} onClose={() => setSyncSourceId(null)} />}
     <footer><span>EnergyLens · 用数据做出更好的能源选择</span><span>本地保存 · 数据只属于你</span></footer>
   </div>;
 }

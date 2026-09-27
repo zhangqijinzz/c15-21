@@ -22,9 +22,12 @@ export interface EnergyDocument {
 
 export type ViewStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
 
+export type SyncableDeviceField = 'name' | 'watts' | 'dailyHours';
+
 export interface Notice {
   kind: 'success' | 'error' | 'info';
   text: string;
+  details?: string[];
 }
 
 export interface EnergyEstimate {
